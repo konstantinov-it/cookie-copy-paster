@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { ChevronDown, Copy, LoaderCircle, Trash2, X } from "lucide-react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   AUTO_COPY_RETRY_COUNT,
   AUTO_COPY_RETRY_DELAY_MS,
-  defaultSettings,
+  defaultServiceSettings,
   MESSAGE_TYPE_AUTHORIZE,
   MESSAGE_TYPE_CLEAR,
   MESSAGE_TYPE_COPY,
@@ -14,13 +15,17 @@ import {
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export default function App() {
-  const [settings, setSettings] = useState(defaultSettings);
-  const [status, setStatus] = useState({ message: "", isError: false, errors: [] });
-  const [copyLoading, setCopyLoading] = useState(false);
+  const [services, setServices] = useState(() => [createServiceSettings()]);
+  const [status, setStatus] = useState(createEmptyStatus);
+  const [loadingStates, setLoadingStates] = useState({});
   const [clearLoading, setClearLoading] = useState(false);
-  const [authorizeLoading, setAuthorizeLoading] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
   const saveTimeoutRef = useRef(null);
+  const servicesRef = useRef(services);
+
+  useEffect(() => {
+    servicesRef.current = services;
+  }, [services]);
 
   useEffect(() => {
     let cancelled = false;
@@ -28,7 +33,8 @@ export default function App() {
     loadSettings()
       .then((storedSettings) => {
         if (!cancelled) {
-          setSettings(storedSettings);
+          setServices(storedSettings.services);
+          servicesRef.current = storedSettings.services;
           setIsHydrated(true);
         }
       })
@@ -59,7 +65,7 @@ export default function App() {
     }
 
     saveTimeoutRef.current = setTimeout(() => {
-      persistSettings(settings).catch((error) => {
+      persistSettings(servicesRef.current).catch((error) => {
         console.error("Не удалось сохранить настройки:", error);
       });
       saveTimeoutRef.current = null;
@@ -70,56 +76,123 @@ export default function App() {
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [settings, isHydrated]);
+  }, [services, isHydrated]);
 
-  const authValues = getAuthValues(settings);
-  const authorizeDisabled = authorizeLoading || !areAuthFieldsValid(authValues);
-
-  async function saveSettingsImmediately(nextSettings) {
-    setSettings(nextSettings);
+  async function saveSettingsImmediately(nextServices) {
+    setServices(nextServices);
+    servicesRef.current = nextServices;
 
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = null;
     }
 
-    await persistSettings(nextSettings);
+    await persistSettings(nextServices);
   }
 
-  function updateField(key, value) {
-    setSettings((current) => ({ ...current, [key]: value }));
+  function updateField(serviceId, key, value) {
+    setServices((current) => {
+      const nextServices = current.map((service) =>
+        service.id === serviceId ? { ...service, [key]: value } : service
+      );
+
+      servicesRef.current = nextServices;
+      return nextServices;
+    });
+  }
+
+  function updateServiceLoading(serviceId, action, isLoading) {
+    setLoadingStates((current) => ({
+      ...current,
+      [serviceId]: {
+        ...current[serviceId],
+        [action]: isLoading,
+      },
+    }));
+  }
+
+  function isServiceLoading(serviceId, action) {
+    return Boolean(loadingStates[serviceId]?.[action]);
+  }
+
+  function getServiceById(serviceId) {
+    return servicesRef.current.find((service) => service.id === serviceId) ?? null;
   }
 
   function clearStatus() {
-    setStatus({ message: "", isError: false, errors: [] });
+    setStatus(createEmptyStatus());
   }
 
   function showStatus(message, isError = false, errors = []) {
     setStatus({ message, isError, errors });
   }
 
-  async function copyCookies(options = {}) {
+  async function handleAddService() {
+    const nextServices = [...servicesRef.current, createServiceSettings()];
+
+    try {
+      await saveSettingsImmediately(nextServices);
+    } catch (error) {
+      console.error("Не удалось добавить стенд:", error);
+      showStatus(`Не удалось добавить стенд: ${error.message}`, true);
+    }
+  }
+
+  async function handleRemoveService(service) {
+    const nextServices = servicesRef.current.filter((item) => item.id !== service.id);
+
+    try {
+      await saveSettingsImmediately(nextServices);
+      setLoadingStates((current) => {
+        const nextLoadingStates = { ...current };
+        delete nextLoadingStates[service.id];
+        return nextLoadingStates;
+      });
+    } catch (error) {
+      console.error("Не удалось удалить стенд:", error);
+      showStatus(
+        formatServiceMessage(service, `Не удалось удалить карточку: ${error.message}`),
+        true
+      );
+    }
+  }
+
+  async function copyCookies(service, options = {}) {
     const { mode = "manual", retries = 0, retryDelayMs = 500 } = options;
     const isManual = mode === "manual";
 
     if (isManual) {
       clearStatus();
-      setCopyLoading(true);
+      updateServiceLoading(service.id, "copy", true);
     }
 
     const payload = {
-      sourceUrl: settings.sourceUrl.trim(),
-      destinationUrl: settings.destinationUrl.trim(),
-      keys: settings.keys.trim(),
-      copyAll: settings.copyAll,
+      sourceUrl: service.sourceUrl.trim(),
+      destinationUrl: service.destinationUrl.trim(),
+      keys: service.keys.trim(),
+      copyAll: service.copyAll,
     };
+    const nextServices = buildUpdatedServices(service.id, payload, servicesRef.current);
+    const currentService = getServiceById(service.id) ?? service;
+    const savedService = nextServices.find((item) => item.id === service.id) ?? currentService;
 
     try {
-      await saveSettingsImmediately({ ...settings, ...payload });
+      await saveSettingsImmediately(nextServices);
     } catch (error) {
       if (isManual) {
-        showStatus(`Не удалось сохранить настройки: ${error.message}`, true);
+        updateServiceLoading(service.id, "copy", false);
       }
+
+      if (isManual) {
+        showStatus(
+          formatServiceMessage(
+            currentService,
+            `Не удалось сохранить настройки: ${error.message}`
+          ),
+          true
+        );
+      }
+
       return { success: false, error };
     }
 
@@ -164,7 +237,7 @@ export default function App() {
           const summary = summaryParts.join(", ");
 
           if (isManual) {
-            showStatus(summary, false, result.errors ?? []);
+            showStatus(formatServiceMessage(savedService, summary), false, result.errors ?? []);
           }
 
           return {
@@ -179,7 +252,10 @@ export default function App() {
 
           if (isManual || attempt === retries) {
             if (isManual) {
-              showStatus(lastError.message ?? String(lastError), true);
+              showStatus(
+                formatServiceMessage(savedService, lastError.message ?? String(lastError)),
+                true
+              );
             }
 
             return { success: false, error: lastError };
@@ -188,7 +264,7 @@ export default function App() {
       }
     } finally {
       if (isManual) {
-        setCopyLoading(false);
+        updateServiceLoading(service.id, "copy", false);
       }
     }
 
@@ -198,12 +274,7 @@ export default function App() {
     };
   }
 
-  async function handleSubmit(event) {
-    event.preventDefault();
-    await copyCookies();
-  }
-
-  async function handleClearCookies() {
+  async function handleClearCurrentPageCookies() {
     clearStatus();
     setClearLoading(true);
 
@@ -235,7 +306,7 @@ export default function App() {
       const { removed, total, host, errors } = response.result ?? {};
       const hostLabel = host ? ` (${host})` : "";
       showStatus(
-        `Удалено cookie: ${removed ?? 0} из ${total ?? 0}${hostLabel}.`,
+        `Текущая страница: удалено cookie ${removed ?? 0} из ${total ?? 0}${hostLabel}.`,
         false,
         errors ?? []
       );
@@ -247,38 +318,55 @@ export default function App() {
     }
   }
 
-  async function handleAuthorize() {
+  async function handleAuthorize(service) {
     clearStatus();
 
+    const authValues = getAuthValues(service);
     if (!areAuthFieldsValid(authValues)) {
-      showStatus("Заполните все поля авторизации и селекторы.", true);
+      showStatus(
+        formatServiceMessage(
+          service,
+          "Заполните все поля авторизации и селекторы."
+        ),
+        true
+      );
       return;
     }
 
     const selectorValidation = validateSelectors(authValues);
     if (!selectorValidation.valid) {
-      showStatus(selectorValidation.message, true);
+      showStatus(formatServiceMessage(service, selectorValidation.message), true);
       return;
     }
 
-    const nextSettings = {
-      ...settings,
-      authUrl: authValues.url,
-      authUsername: authValues.username,
-      authPassword: authValues.password,
-      authUsernameSelector: authValues.usernameSelector,
-      authPasswordSelector: authValues.passwordSelector,
-      authSubmitSelector: authValues.submitSelector,
-    };
+    const nextServices = buildUpdatedServices(
+      service.id,
+      {
+        authUrl: authValues.url,
+        authUsername: authValues.username,
+        authPassword: authValues.password,
+        authUsernameSelector: authValues.usernameSelector,
+        authPasswordSelector: authValues.passwordSelector,
+        authSubmitSelector: authValues.submitSelector,
+      },
+      servicesRef.current
+    );
+    const savedService = nextServices.find((item) => item.id === service.id) ?? service;
 
     try {
-      await saveSettingsImmediately(nextSettings);
+      await saveSettingsImmediately(nextServices);
     } catch (error) {
-      showStatus(`Не удалось сохранить настройки авторизации: ${error.message}`, true);
+      showStatus(
+        formatServiceMessage(
+          service,
+          `Не удалось сохранить настройки авторизации: ${error.message}`
+        ),
+        true
+      );
       return;
     }
 
-    setAuthorizeLoading(true);
+    updateServiceLoading(service.id, "authorize", true);
 
     try {
       const response = await sendRuntimeMessage({
@@ -305,8 +393,8 @@ export default function App() {
       let statusText = authMessage;
       let combinedErrors = [...authErrors];
 
-      if (shouldAutoCopyAfterAuth(settings)) {
-        const autoCopyResult = await copyCookies({
+      if (shouldAutoCopyAfterAuth(savedService)) {
+        const autoCopyResult = await copyCookies(savedService, {
           mode: "auto",
           retries: AUTO_COPY_RETRY_COUNT,
           retryDelayMs: AUTO_COPY_RETRY_DELAY_MS,
@@ -322,174 +410,268 @@ export default function App() {
         }
       }
 
-      showStatus(statusText, false, combinedErrors);
+      showStatus(formatServiceMessage(savedService, statusText), false, combinedErrors);
     } catch (error) {
       console.error("Ошибка автоматической авторизации:", error);
-      showStatus(error.message ?? String(error), true);
+      showStatus(formatServiceMessage(savedService, error.message ?? String(error)), true);
     } finally {
-      setAuthorizeLoading(false);
+      updateServiceLoading(service.id, "authorize", false);
     }
   }
 
   return (
-    <main>
-      <h1>Cookie Copy Paster</h1>
-      <form onSubmit={handleSubmit}>
-        <details className="accordion">
-          <summary>Настройки cookie</summary>
-          <div className="accordion-content">
-            <label className="field">
-              <span>URL источника</span>
-              <input
-                type="url"
-                value={settings.sourceUrl}
-                onChange={(event) => updateField("sourceUrl", event.target.value)}
-                placeholder="https://example.com"
-                required
-              />
-            </label>
-
-            <label className="field">
-              <span>URL назначения</span>
-              <input
-                type="url"
-                value={settings.destinationUrl}
-                onChange={(event) => updateField("destinationUrl", event.target.value)}
-                placeholder="https://target.com"
-                required
-              />
-            </label>
-
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={settings.copyAll}
-                onChange={(event) => updateField("copyAll", event.target.checked)}
-              />
-              <span>Скопировать все cookie</span>
-            </label>
-
-            <label className="field">
-              <span>Ключи cookie (через запятую)</span>
-              <textarea
-                rows="3"
-                value={settings.keys}
-                onChange={(event) => updateField("keys", event.target.value)}
-                placeholder={
-                  settings.copyAll ? "Список не используется" : "session_id, auth_token"
-                }
-                disabled={settings.copyAll}
-              />
-            </label>
-          </div>
-        </details>
-
-        <div className="actions">
-          <button className="primary-button" type="submit" disabled={copyLoading}>
-            {copyLoading ? "Копирование..." : "Скопировать"}
-          </button>
-          <button
-            className="secondary-button"
-            type="button"
-            disabled={clearLoading}
-            onClick={handleClearCookies}
-          >
-            {clearLoading ? "Очищаем..." : "Очистить куки"}
-          </button>
-        </div>
-
+    <main className="popup">
+      <div className="popup-header">
+        <h1>Cookie Copy Paster</h1>
         <button
-          className="primary-button auth-button"
+          className="secondary-button header-clear-button"
           type="button"
-          disabled={authorizeDisabled}
-          onClick={handleAuthorize}
+          disabled={clearLoading}
+          onClick={handleClearCurrentPageCookies}
         >
-          {authorizeLoading ? "Авторизация..." : "Авторизоваться"}
+          {clearLoading ? (
+            <>
+              <LoaderCircle className="spin-icon" size={16} />
+              <span>Очищаем...</span>
+            </>
+          ) : (
+            <>
+              <Trash2 size={16} />
+              <span>Очистить cookie</span>
+            </>
+          )}
         </button>
+      </div>
 
-        <details className="accordion">
-          <summary>Авторизация</summary>
-          <div className="accordion-content">
-            <label className="field">
-              <span>URL ресурса</span>
-              <input
-                type="url"
-                value={settings.authUrl}
-                onChange={(event) => updateField("authUrl", event.target.value)}
-                placeholder="https://example.com/login"
-                autoComplete="url"
-              />
-            </label>
+      <div className="service-list">
+        {services.map((service, index) => {
+          const authValues = getAuthValues(service);
+          const copyLoading = isServiceLoading(service.id, "copy");
+          const authorizeLoading = isServiceLoading(service.id, "authorize");
+          const authorizeDisabled = authorizeLoading || !areAuthFieldsValid(authValues);
+          const removeDisabled = copyLoading || authorizeLoading;
 
-            <label className="field">
-              <span>Логин</span>
-              <input
-                type="text"
-                value={settings.authUsername}
-                onChange={(event) => updateField("authUsername", event.target.value)}
-                placeholder="username"
-                autoComplete="username"
-              />
-            </label>
+          return (
+            <Fragment key={service.id}>
+              <section className="service-block">
+                <div className="service-block-header">
+                  <h2 className="service-title">{getServiceTitle(service)}</h2>
+                  <button
+                    className="card-remove-button"
+                    type="button"
+                    disabled={removeDisabled}
+                    onClick={() => handleRemoveService(service)}
+                    aria-label="Удалить карточку"
+                    title="Удалить карточку"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
 
-            <label className="field">
-              <span>Пароль</span>
-              <input
-                type="password"
-                value={settings.authPassword}
-                onChange={(event) => updateField("authPassword", event.target.value)}
-                placeholder="password"
-                autoComplete="current-password"
-              />
-            </label>
+                <div className="service-actions">
+                  <button
+                    className="primary-button authorize-button"
+                    type="button"
+                    disabled={authorizeDisabled}
+                    onClick={() => handleAuthorize(service)}
+                  >
+                    {authorizeLoading ? "Авторизация..." : "Авторизоваться"}
+                  </button>
 
-            <label className="field">
-              <span>Селектор поля логина</span>
-              <input
-                type="text"
-                value={settings.authUsernameSelector}
-                onChange={(event) =>
-                  updateField("authUsernameSelector", event.target.value)
-                }
-                placeholder="#login-input"
-              />
-            </label>
+                  <button
+                    className="secondary-button icon-button copy-button"
+                    type="button"
+                    disabled={copyLoading}
+                    onClick={() => copyCookies(service)}
+                    aria-label="Скопировать cookie"
+                    title="Скопировать cookie"
+                  >
+                    {copyLoading ? (
+                      <LoaderCircle className="spin-icon" size={16} />
+                    ) : (
+                      <Copy size={16} />
+                    )}
+                  </button>
+                </div>
 
-            <label className="field">
-              <span>Селектор поля пароля</span>
-              <input
-                type="text"
-                value={settings.authPasswordSelector}
-                onChange={(event) =>
-                  updateField("authPasswordSelector", event.target.value)
-                }
-                placeholder="#password-input"
-              />
-            </label>
+                <details className="accordion">
+                  <summary>
+                    <span>Настройки</span>
+                    <ChevronDown className="accordion-chevron" size={16} aria-hidden="true" />
+                  </summary>
+                  <div className="accordion-content">
+                    <section className="settings-section">
+                      <p className="settings-heading">Копирование cookie</p>
 
-            <label className="field">
-              <span>Селектор кнопки входа</span>
-              <input
-                type="text"
-                value={settings.authSubmitSelector}
-                onChange={(event) => updateField("authSubmitSelector", event.target.value)}
-                placeholder="#login-button"
-              />
-            </label>
+                      <label className="field">
+                        <span>URL источника</span>
+                        <input
+                          type="url"
+                          value={service.sourceUrl}
+                          onChange={(event) =>
+                            updateField(service.id, "sourceUrl", event.target.value)
+                          }
+                          placeholder="https://example.com"
+                        />
+                      </label>
 
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={settings.autoCopyAfterAuth}
-                onChange={(event) =>
-                  updateField("autoCopyAfterAuth", event.target.checked)
-                }
-              />
-              <span>Автоматически копировать cookie после авторизации</span>
-            </label>
-          </div>
-        </details>
-      </form>
+                      <label className="field">
+                        <span>URL назначения</span>
+                        <input
+                          type="url"
+                          value={service.destinationUrl}
+                          onChange={(event) =>
+                            updateField(service.id, "destinationUrl", event.target.value)
+                          }
+                          placeholder="https://target.com"
+                        />
+                      </label>
+
+                      <label className="toggle">
+                        <input
+                          type="checkbox"
+                          checked={service.copyAll}
+                          onChange={(event) =>
+                            updateField(service.id, "copyAll", event.target.checked)
+                          }
+                        />
+                        <span>Скопировать все cookie</span>
+                      </label>
+
+                      <label className="field">
+                        <span>Ключи cookie (через запятую)</span>
+                        <textarea
+                          rows="2"
+                          value={service.keys}
+                          onChange={(event) =>
+                            updateField(service.id, "keys", event.target.value)
+                          }
+                          placeholder={
+                            service.copyAll
+                              ? "Список не используется"
+                              : "session_id, auth_token"
+                          }
+                          disabled={service.copyAll}
+                        />
+                      </label>
+                    </section>
+
+                    <section className="settings-section">
+                      <p className="settings-heading">Авторизация</p>
+
+                      <label className="field">
+                        <span>URL ресурса</span>
+                        <input
+                          type="url"
+                          value={service.authUrl}
+                          onChange={(event) =>
+                            updateField(service.id, "authUrl", event.target.value)
+                          }
+                          placeholder="https://example.com/login"
+                          autoComplete="url"
+                        />
+                      </label>
+
+                      <label className="field">
+                        <span>Логин</span>
+                        <input
+                          type="text"
+                          value={service.authUsername}
+                          onChange={(event) =>
+                            updateField(service.id, "authUsername", event.target.value)
+                          }
+                          placeholder="username"
+                          autoComplete="username"
+                        />
+                      </label>
+
+                      <label className="field">
+                        <span>Пароль</span>
+                        <input
+                          type="password"
+                          value={service.authPassword}
+                          onChange={(event) =>
+                            updateField(service.id, "authPassword", event.target.value)
+                          }
+                          placeholder="password"
+                          autoComplete="current-password"
+                        />
+                      </label>
+
+                      <label className="field">
+                        <span>Селектор поля логина</span>
+                        <input
+                          type="text"
+                          value={service.authUsernameSelector}
+                          onChange={(event) =>
+                            updateField(
+                              service.id,
+                              "authUsernameSelector",
+                              event.target.value
+                            )
+                          }
+                          placeholder="#login-input"
+                        />
+                      </label>
+
+                      <label className="field">
+                        <span>Селектор поля пароля</span>
+                        <input
+                          type="text"
+                          value={service.authPasswordSelector}
+                          onChange={(event) =>
+                            updateField(
+                              service.id,
+                              "authPasswordSelector",
+                              event.target.value
+                            )
+                          }
+                          placeholder="#password-input"
+                        />
+                      </label>
+
+                      <label className="field">
+                        <span>Селектор кнопки входа</span>
+                        <input
+                          type="text"
+                          value={service.authSubmitSelector}
+                          onChange={(event) =>
+                            updateField(service.id, "authSubmitSelector", event.target.value)
+                          }
+                          placeholder="#login-button"
+                        />
+                      </label>
+
+                      <label className="toggle">
+                        <input
+                          type="checkbox"
+                          checked={service.autoCopyAfterAuth}
+                          onChange={(event) =>
+                            updateField(
+                              service.id,
+                              "autoCopyAfterAuth",
+                              event.target.checked
+                            )
+                          }
+                        />
+                        <span>Автоматически копировать cookie после авторизации</span>
+                      </label>
+                    </section>
+                  </div>
+                </details>
+              </section>
+
+              {index < services.length - 1 ? (
+                <div className="service-divider" aria-hidden="true" />
+              ) : null}
+            </Fragment>
+          );
+        })}
+      </div>
+
+      <button className="add-service-button" type="button" onClick={handleAddService}>
+        +
+      </button>
 
       {status.message ? (
         <section className={`status-panel${status.isError ? " error" : ""}`}>
@@ -510,13 +692,65 @@ export default function App() {
   );
 }
 
-async function loadSettings() {
-  const stored = await chrome.storage.local.get(STORAGE_KEY);
-  return { ...defaultSettings, ...(stored?.[STORAGE_KEY] ?? {}) };
+function createEmptyStatus() {
+  return { message: "", isError: false, errors: [] };
 }
 
-async function persistSettings(settings) {
-  await chrome.storage.local.set({ [STORAGE_KEY]: settings });
+function createServiceSettings() {
+  return {
+    id: createServiceId(),
+    ...defaultServiceSettings,
+  };
+}
+
+function createServiceId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `service-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function buildUpdatedServices(serviceId, updates, services) {
+  return services.map((service) =>
+    service.id === serviceId ? { ...service, ...updates } : service
+  );
+}
+
+async function loadSettings() {
+  const stored = await chrome.storage.local.get(STORAGE_KEY);
+  return { services: normalizeStoredServices(stored?.[STORAGE_KEY]) };
+}
+
+function normalizeStoredServices(storedSettings) {
+  if (Array.isArray(storedSettings?.services)) {
+    return storedSettings.services.map(normalizeServiceSettings);
+  }
+
+  if (storedSettings && typeof storedSettings === "object") {
+    return [normalizeServiceSettings(storedSettings)];
+  }
+
+  return [createServiceSettings()];
+}
+
+function normalizeServiceSettings(service) {
+  const normalized = {
+    ...defaultServiceSettings,
+    ...(service ?? {}),
+  };
+
+  return {
+    ...normalized,
+    id:
+      typeof normalized.id === "string" && normalized.id.trim()
+        ? normalized.id
+        : createServiceId(),
+  };
+}
+
+async function persistSettings(services) {
+  await chrome.storage.local.set({ [STORAGE_KEY]: { services } });
 }
 
 function sendRuntimeMessage(message) {
@@ -545,22 +779,22 @@ function queryTabs(queryInfo) {
   });
 }
 
-function shouldAutoCopyAfterAuth(settings) {
-  if (!settings.autoCopyAfterAuth) {
+function shouldAutoCopyAfterAuth(service) {
+  if (!service.autoCopyAfterAuth) {
     return false;
   }
 
-  return Boolean(settings.sourceUrl.trim() && settings.destinationUrl.trim());
+  return Boolean(service.sourceUrl.trim() && service.destinationUrl.trim());
 }
 
-function getAuthValues(settings) {
+function getAuthValues(service) {
   return {
-    url: settings.authUrl.trim(),
-    username: settings.authUsername,
-    password: settings.authPassword,
-    usernameSelector: settings.authUsernameSelector.trim(),
-    passwordSelector: settings.authPasswordSelector.trim(),
-    submitSelector: settings.authSubmitSelector.trim(),
+    url: service.authUrl.trim(),
+    username: service.authUsername,
+    password: service.authPassword,
+    usernameSelector: service.authUsernameSelector.trim(),
+    passwordSelector: service.authPasswordSelector.trim(),
+    submitSelector: service.authSubmitSelector.trim(),
   };
 }
 
@@ -594,4 +828,22 @@ function validateSelectors({ usernameSelector, passwordSelector, submitSelector 
   }
 
   return { valid: true };
+}
+
+function getServiceTitle(service) {
+  const resourceUrl = String(service.authUrl ?? "").trim();
+
+  if (!resourceUrl) {
+    return "Новый стенд";
+  }
+
+  try {
+    return new URL(resourceUrl).host || "Новый стенд";
+  } catch {
+    return resourceUrl;
+  }
+}
+
+function formatServiceMessage(service, message) {
+  return `${getServiceTitle(service)}: ${message}`;
 }
