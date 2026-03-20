@@ -1,11 +1,13 @@
-const MESSAGE_TYPE_COPY = "copyCookies";
-const MESSAGE_TYPE_CLEAR = "clearCookies";
-const MESSAGE_TYPE_AUTHORIZE = "authorize";
+import {
+  MESSAGE_TYPE_AUTHORIZE,
+  MESSAGE_TYPE_CLEAR,
+  MESSAGE_TYPE_COPY,
+  REQUIRED_SELECTOR_PREFIXES,
+} from "../shared/constants.js";
 
 const TAB_LOAD_TIMEOUT_MS = 15000;
 const AUTH_POLL_ATTEMPTS = 20;
 const AUTH_POLL_INTERVAL_MS = 500;
-const ALLOWED_SELECTOR_PREFIXES = ["#", "."];
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message?.type) {
@@ -18,10 +20,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         .then((result) => sendResponse({ success: true, result }))
         .catch((error) => {
           console.error("Не удалось скопировать cookie:", error);
-          sendResponse({
-            success: false,
-            error: error.message ?? String(error),
-          });
+          sendResponse({ success: false, error: error.message ?? String(error) });
         });
       return true;
 
@@ -30,10 +29,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         .then((result) => sendResponse({ success: true, result }))
         .catch((error) => {
           console.error("Ошибка очистки cookie:", error);
-          sendResponse({
-            success: false,
-            error: error.message ?? String(error),
-          });
+          sendResponse({ success: false, error: error.message ?? String(error) });
         });
       return true;
 
@@ -42,10 +38,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         .then((result) => sendResponse({ success: true, result }))
         .catch((error) => {
           console.error("Ошибка автоматической авторизации:", error);
-          sendResponse({
-            success: false,
-            error: error.message ?? String(error),
-          });
+          sendResponse({ success: false, error: error.message ?? String(error) });
         });
       return true;
 
@@ -63,10 +56,8 @@ async function copyCookies({ sourceUrl, destinationUrl, copyAll, keys }) {
     .map((key) => key.trim())
     .filter(Boolean);
   const keySet = copyAll ? null : new Set(trimmedKeys);
-
   const source = new URL(sourceUrl);
   const destination = new URL(destinationUrl);
-
   const cookies = await getCookies({ url: source.origin });
   const filteredCookies = cookies.filter((cookie) =>
     keySet ? keySet.has(cookie.name) : true
@@ -81,8 +72,7 @@ async function copyCookies({ sourceUrl, destinationUrl, copyAll, keys }) {
 
   for (const cookie of filteredCookies) {
     try {
-      const setDetails = buildSetDetails(cookie, destination);
-      await setCookie(setDetails);
+      await setCookie(buildSetDetails(cookie, destination));
       summary.copied += 1;
     } catch (error) {
       const message = error.message ?? String(error);
@@ -98,20 +88,17 @@ async function clearCookies({ url }) {
   validateUrl(url, "URL для очистки cookie");
 
   const targetUrl = new URL(url);
-  const hostname = targetUrl.hostname;
-
   const cookies = await getCookies({ url: targetUrl.origin });
   const summary = {
     removed: 0,
     total: cookies.length,
-    host: hostname,
+    host: targetUrl.hostname,
     errors: [],
   };
 
   for (const cookie of cookies) {
     try {
-      const removeDetails = buildRemoveDetails(cookie);
-      await removeCookie(removeDetails);
+      await removeCookie(buildRemoveDetails(cookie));
       summary.removed += 1;
     } catch (error) {
       const message = error.message ?? String(error);
@@ -134,42 +121,30 @@ async function authorize({ url, username, password, selectors }) {
     throw new Error("Укажите пароль для авторизации.");
   }
 
-  const normalizedSelectors = normalizeSelectors(selectors);
-
   const tab = await createTab({ url });
   if (tab.id === undefined) {
     throw new Error("Не удалось открыть вкладку для авторизации.");
   }
 
-  const tabId = tab.id;
-  try {
-    const readyTab = await waitForTabReady(tabId);
+  await waitForTabReady(tab.id);
 
-    const injectionResults = await executeAuthorizationScript(tabId, {
-      username,
-      password,
-      selectors: normalizedSelectors,
-      attempts: AUTH_POLL_ATTEMPTS,
-      interval: AUTH_POLL_INTERVAL_MS,
-    });
+  const injectionResults = await executeAuthorizationScript(tab.id, {
+    username,
+    password,
+    selectors: normalizeSelectors(selectors),
+    attempts: AUTH_POLL_ATTEMPTS,
+    interval: AUTH_POLL_INTERVAL_MS,
+  });
 
-    const scriptResult = injectionResults?.[0]?.result;
-
-    if (!scriptResult?.success) {
-      const errorMessage =
-        scriptResult?.error ?? "Не удалось заполнить форму авторизации.";
-      throw new Error(errorMessage);
-    }
-
-    return {
-      message:
-        scriptResult.message ??
-        `Авторизация выполнена на ${readyTab?.url ?? url}.`,
-      errors: scriptResult.errors ?? [],
-    };
-  } finally {
-    // вкладка остаётся открытой для пользователя
+  const scriptResult = injectionResults?.[0]?.result;
+  if (!scriptResult?.success) {
+    throw new Error(scriptResult?.error ?? "Не удалось заполнить форму авторизации.");
   }
+
+  return {
+    message: scriptResult.message ?? `Авторизация выполнена на ${url}.`,
+    errors: scriptResult.errors ?? [],
+  };
 }
 
 function validateUrl(urlString, label) {
@@ -180,7 +155,7 @@ function validateUrl(urlString, label) {
   try {
     const url = new URL(urlString);
     if (!url.protocol.startsWith("http")) {
-      throw new Error("Поддерживаются только протоколы http или https.");
+      throw new Error("Поддерживаются только протоколы http и https.");
     }
   } catch (error) {
     const reason =
@@ -191,16 +166,8 @@ function validateUrl(urlString, label) {
 
 function buildSetDetails(cookie, destinationUrl) {
   const cookiePath = cookie.path || "/";
-  const cookieUrl = `${destinationUrl.origin}${cookiePath}`;
-
-  if (cookie.secure && destinationUrl.protocol !== "https:") {
-    throw new Error(
-      `Cookie "${cookie.name}" требует HTTPS, но URL назначения использует ${destinationUrl.protocol}`
-    );
-  }
-
   const details = {
-    url: cookieUrl,
+    url: `${destinationUrl.origin}${cookiePath}`,
     name: cookie.name,
     value: cookie.value,
     path: cookiePath,
@@ -208,6 +175,12 @@ function buildSetDetails(cookie, destinationUrl) {
     httpOnly: cookie.httpOnly,
     sameSite: cookie.sameSite,
   };
+
+  if (cookie.secure && destinationUrl.protocol !== "https:") {
+    throw new Error(
+      `Cookie "${cookie.name}" требует HTTPS, но URL назначения использует ${destinationUrl.protocol}`
+    );
+  }
 
   if (!cookie.hostOnly) {
     details.domain = destinationUrl.hostname;
@@ -236,11 +209,8 @@ function buildRemoveDetails(cookie) {
   const domain = cookie.domain?.startsWith(".")
     ? cookie.domain.slice(1)
     : cookie.domain ?? "";
-  const protocol = cookie.secure ? "https" : "http";
-  const path = cookie.path || "/";
-
   const details = {
-    url: `${protocol}://${domain}${path}`,
+    url: `${cookie.secure ? "https" : "http"}://${domain}${cookie.path || "/"}`,
     name: cookie.name,
   };
 
@@ -252,16 +222,10 @@ function buildRemoveDetails(cookie) {
 }
 
 function normalizeSelectors(rawSelectors = {}) {
-  const { username, password, submit } = rawSelectors;
-
-  if (!username || !password || !submit) {
-    throw new Error("Укажите селекторы для логина, пароля и кнопки входа.");
-  }
-
   const normalized = {
-    username: String(username).trim(),
-    password: String(password).trim(),
-    submit: String(submit).trim(),
+    username: String(rawSelectors.username ?? "").trim(),
+    password: String(rawSelectors.password ?? "").trim(),
+    submit: String(rawSelectors.submit ?? "").trim(),
   };
 
   for (const [key, selector] of Object.entries(normalized)) {
@@ -269,9 +233,11 @@ function normalizeSelectors(rawSelectors = {}) {
       throw new Error(`Селектор ${key} не может быть пустым.`);
     }
 
-    if (!ALLOWED_SELECTOR_PREFIXES.some((prefix) => selector.startsWith(prefix))) {
+    if (!REQUIRED_SELECTOR_PREFIXES.some((prefix) => selector.startsWith(prefix))) {
       throw new Error(
-        `Селектор ${key} должен начинаться с "${ALLOWED_SELECTOR_PREFIXES.join('" или "')}".`
+        `Селектор ${key} должен начинаться с "${REQUIRED_SELECTOR_PREFIXES.join(
+          '" или "'
+        )}".`
       );
     }
   }
@@ -284,9 +250,10 @@ function getCookies(filter) {
     chrome.cookies.getAll(filter, (cookies) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
-      } else {
-        resolve(cookies ?? []);
+        return;
       }
+
+      resolve(cookies ?? []);
     });
   });
 }
@@ -296,9 +263,10 @@ function setCookie(details) {
     chrome.cookies.set(details, (cookie) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
-      } else {
-        resolve(cookie);
+        return;
       }
+
+      resolve(cookie);
     });
   });
 }
@@ -308,11 +276,15 @@ function removeCookie(details) {
     chrome.cookies.remove(details, (result) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
-      } else if (!result) {
-        reject(new Error("Cookie не найдено для удаления."));
-      } else {
-        resolve(result);
+        return;
       }
+
+      if (!result) {
+        reject(new Error("Cookie не найдено для удаления."));
+        return;
+      }
+
+      resolve(result);
     });
   });
 }
@@ -322,9 +294,23 @@ function createTab(createProperties) {
     chrome.tabs.create(createProperties, (tab) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
-      } else {
-        resolve(tab);
+        return;
       }
+
+      resolve(tab);
+    });
+  });
+}
+
+function getTab(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.get(tabId, (tab) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+
+      resolve(tab);
     });
   });
 }
@@ -341,7 +327,7 @@ async function waitForTabReady(tabId) {
       reject(new Error("Таймаут ожидания загрузки страницы для авторизации."));
     }, TAB_LOAD_TIMEOUT_MS);
 
-    const handleUpdated = (updatedTabId, changeInfo, tab) => {
+    const handleUpdated = (updatedTabId, changeInfo) => {
       if (updatedTabId === tabId && changeInfo.status === "complete") {
         cleanup();
         resolve();
@@ -368,18 +354,6 @@ async function waitForTabReady(tabId) {
   return getTab(tabId);
 }
 
-function getTab(tabId) {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.get(tabId, (tab) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-      } else {
-        resolve(tab);
-      }
-    });
-  });
-}
-
 function executeAuthorizationScript(tabId, args) {
   return chrome.scripting.executeScript({
     target: { tabId },
@@ -396,6 +370,7 @@ async function fillAuthorizationForm({
   interval,
 }) {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
   const applyFieldValue = (element, value) => {
     element.focus();
     element.value = value;

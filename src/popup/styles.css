@@ -4,6 +4,10 @@
   font-size: 14px;
 }
 
+* {
+  box-sizing: border-box;
+}
+
 body {
   min-width: 320px;
   margin: 0;
@@ -15,7 +19,7 @@ body {
 @media (prefers-color-scheme: dark) {
   body {
     background: #1d1f21;
-    color: #1d1e1f;
+    color: #f8f9fa;
   }
 
   input,
@@ -25,8 +29,7 @@ body {
     border-color: #495057;
   }
 
-  #auth-accordion,
-  #cookie-accordion {
+  .accordion {
     background: #2b2d31;
     border-color: #495057;
   }
@@ -43,13 +46,14 @@ body {
     color: inherit;
   }
 
-  .secondary-button:hover:not([disabled]) {
+  .secondary-button:hover:not(:disabled) {
     background: rgba(255, 255, 255, 0.08);
   }
+}
 
-  .field {
-    color: #1d1e1f;
-  }
+main {
+  display: flex;
+  flex-direction: column;
 }
 
 h1 {
@@ -97,10 +101,7 @@ textarea {
   flex-wrap: wrap;
 }
 
-.actions .primary-button {
-  flex: 1 1 auto;
-}
-
+.actions .primary-button,
 .actions .secondary-button {
   flex: 1 1 auto;
 }
@@ -116,11 +117,11 @@ button {
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-button:hover:not([disabled]) {
+button:hover:not(:disabled) {
   background: #0b5ed7;
 }
 
-button[disabled] {
+button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
@@ -137,7 +138,7 @@ button[disabled] {
   color: #212529;
 }
 
-.secondary-button:hover:not([disabled]) {
+.secondary-button:hover:not(:disabled) {
   background: #e9ecef;
 }
 
@@ -145,29 +146,25 @@ button[disabled] {
   width: 100%;
 }
 
-#auth-accordion,
-#cookie-accordion {
+.accordion {
   border: 1px solid #ced4da;
   border-radius: 6px;
   background: #fff;
   padding: 0;
 }
 
-#auth-accordion summary,
-#cookie-accordion summary {
+.accordion summary {
   padding: 10px 14px;
   font-weight: 600;
   cursor: pointer;
   list-style: none;
 }
 
-#auth-accordion summary::-webkit-details-marker,
-#cookie-accordion summary::-webkit-details-marker {
+.accordion summary::-webkit-details-marker {
   display: none;
 }
 
-#auth-accordion[open] summary,
-#cookie-accordion[open] summary {
+.accordion[open] summary {
   border-bottom: 1px solid #ced4da;
 }
 
@@ -178,7 +175,7 @@ button[disabled] {
   padding: 12px 14px 14px;
 }
 
-#status {
+.status-panel {
   margin-top: 16px;
   padding: 12px;
   border-radius: 6px;
@@ -187,13 +184,22 @@ button[disabled] {
   color: #0f5132;
 }
 
-#status.error {
+.status-panel.error {
   background: #f8d7da;
   border-color: #f5c2c7;
   color: #842029;
 }
 
-#error-list {
+.status-panel h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.status-panel p {
+  margin: 8px 0 0;
+}
+
+.error-list {
   margin: 8px 0 0;
   padding-left: 20px;
 }
