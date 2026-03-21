@@ -6,6 +6,8 @@ export const SAVE_DEBOUNCE_MS = 300;
 export const REQUIRED_SELECTOR_PREFIXES = ["#", "."];
 export const AUTO_COPY_RETRY_COUNT = 3;
 export const AUTO_COPY_RETRY_DELAY_MS = 700;
+export const AUTO_COPY_PENDING_KEY = "cookieCopyPaster.pendingAutoCopy";
+export const AUTO_COPY_MAX_WAIT_MS = 10 * 60 * 1000;
 
 export const defaultServiceSettings = {
   sourceUrl: "",

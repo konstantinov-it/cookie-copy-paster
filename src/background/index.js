@@ -1,4 +1,6 @@
 import {
+  AUTO_COPY_MAX_WAIT_MS,
+  AUTO_COPY_PENDING_KEY,
   MESSAGE_TYPE_AUTHORIZE,
   MESSAGE_TYPE_CLEAR,
   MESSAGE_TYPE_COPY,
@@ -8,6 +10,21 @@ import {
 const TAB_LOAD_TIMEOUT_MS = 15000;
 const AUTH_POLL_ATTEMPTS = 20;
 const AUTH_POLL_INTERVAL_MS = 500;
+const AUTO_COPY_STORAGE = chrome.storage.session ?? chrome.storage.local;
+
+chrome.cookies.onChanged.addListener((changeInfo) => {
+  void handleCookieChange(changeInfo);
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === "complete") {
+    void handleTabComplete(tabId);
+  }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void handleTabRemoved(tabId);
+});
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message?.type) {
@@ -58,7 +75,7 @@ async function copyCookies({ sourceUrl, destinationUrl, copyAll, keys }) {
   const keySet = copyAll ? null : new Set(trimmedKeys);
   const source = new URL(sourceUrl);
   const destination = new URL(destinationUrl);
-  const cookies = await getCookies({ url: source.origin });
+  const cookies = await getCookiesForCopy(source);
   const filteredCookies = cookies.filter((cookie) =>
     keySet ? keySet.has(cookie.name) : true
   );
@@ -110,7 +127,7 @@ async function clearCookies({ url }) {
   return summary;
 }
 
-async function authorize({ url, username, password, selectors }) {
+async function authorize({ serviceId, url, username, password, selectors, autoCopy }) {
   validateUrl(url, "URL ресурса авторизации");
 
   if (!username) {
@@ -141,8 +158,26 @@ async function authorize({ url, username, password, selectors }) {
     throw new Error(scriptResult?.error ?? "Не удалось заполнить форму авторизации.");
   }
 
+  const pendingAutoCopy = normalizePendingAutoCopyJob({
+    serviceId,
+    tabId: tab.id,
+    authUrl: url,
+    autoCopy,
+  });
+
+  if (pendingAutoCopy) {
+    await upsertPendingAutoCopyJob(pendingAutoCopy);
+    await attemptAutoCopy(pendingAutoCopy);
+  } else if (serviceId) {
+    await removePendingAutoCopyJob(serviceId);
+  }
+
+  const baseMessage = scriptResult.message ?? `Авторизация выполнена на ${url}.`;
+
   return {
-    message: scriptResult.message ?? `Авторизация выполнена на ${url}.`,
+    message: pendingAutoCopy
+      ? `${baseMessage} Автокопирование cookie отслеживается в фоне.`
+      : baseMessage,
     errors: scriptResult.errors ?? [],
   };
 }
@@ -243,6 +278,204 @@ function normalizeSelectors(rawSelectors = {}) {
   }
 
   return normalized;
+}
+
+function normalizePendingAutoCopyJob({ serviceId, tabId, authUrl, autoCopy }) {
+  if (!autoCopy?.enabled) {
+    return null;
+  }
+
+  validateUrl(autoCopy.sourceUrl, "URL источника автокопирования");
+  validateUrl(autoCopy.destinationUrl, "URL назначения автокопирования");
+
+  const resolvedPair = resolveAutoCopyPair({
+    authUrl,
+    sourceUrl: autoCopy.sourceUrl,
+    destinationUrl: autoCopy.destinationUrl,
+  });
+
+  return {
+    id:
+      typeof serviceId === "string" && serviceId.trim()
+        ? serviceId
+        : createPendingAutoCopyId(),
+    tabId,
+    authUrl,
+    sourceUrl: resolvedPair.sourceUrl,
+    destinationUrl: resolvedPair.destinationUrl,
+    copyAll: Boolean(autoCopy.copyAll),
+    keys: String(autoCopy.keys ?? "").trim(),
+    expiresAt: Date.now() + AUTO_COPY_MAX_WAIT_MS,
+  };
+}
+
+function resolveAutoCopyPair({ authUrl, sourceUrl, destinationUrl }) {
+  if (urlsShareHost(authUrl, destinationUrl) && !urlsShareHost(authUrl, sourceUrl)) {
+    return {
+      sourceUrl: destinationUrl,
+      destinationUrl: sourceUrl,
+    };
+  }
+
+  return { sourceUrl, destinationUrl };
+}
+
+function urlsShareHost(leftUrlString, rightUrlString) {
+  try {
+    const leftHostname = new URL(leftUrlString).hostname;
+    const rightHostname = new URL(rightUrlString).hostname;
+    return (
+      leftHostname === rightHostname ||
+      leftHostname.endsWith(`.${rightHostname}`) ||
+      rightHostname.endsWith(`.${leftHostname}`)
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function handleCookieChange(changeInfo) {
+  if (!changeInfo?.cookie) {
+    return;
+  }
+
+  await processPendingAutoCopyJobs({
+    shouldRun: (job) => cookieMatchesUrl(changeInfo.cookie, job.sourceUrl),
+    removeAfterRun: false,
+  });
+}
+
+async function handleTabComplete(tabId) {
+  await processPendingAutoCopyJobs({
+    shouldRun: (job) => job.tabId === tabId,
+    removeAfterRun: false,
+  });
+}
+
+async function handleTabRemoved(tabId) {
+  await processPendingAutoCopyJobs({
+    shouldRun: (job) => job.tabId === tabId,
+    removeAfterRun: true,
+  });
+}
+
+async function processPendingAutoCopyJobs({ shouldRun, removeAfterRun }) {
+  const jobs = await loadPendingAutoCopyJobs();
+  if (!jobs.length) {
+    return;
+  }
+
+  const now = Date.now();
+  const nextJobs = [];
+  let changed = false;
+
+  for (const job of jobs) {
+    if (isPendingAutoCopyExpired(job, now)) {
+      changed = true;
+      continue;
+    }
+
+    if (!shouldRun(job)) {
+      nextJobs.push(job);
+      continue;
+    }
+
+    try {
+      await attemptAutoCopy(job);
+    } catch (error) {
+      console.error("Не удалось выполнить автокопирование cookie:", error);
+    }
+
+    if (removeAfterRun) {
+      changed = true;
+      continue;
+    }
+
+    nextJobs.push(job);
+  }
+
+  if (changed) {
+    await savePendingAutoCopyJobs(nextJobs);
+  }
+}
+
+async function attemptAutoCopy(job) {
+  return copyCookies({
+    sourceUrl: job.sourceUrl,
+    destinationUrl: job.destinationUrl,
+    copyAll: job.copyAll,
+    keys: job.keys,
+  });
+}
+
+function isPendingAutoCopyExpired(job, now = Date.now()) {
+  return !job?.expiresAt || job.expiresAt <= now;
+}
+
+function createPendingAutoCopyId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `auto-copy-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function loadPendingAutoCopyJobs() {
+  const stored = await AUTO_COPY_STORAGE.get(AUTO_COPY_PENDING_KEY);
+  return Array.isArray(stored?.[AUTO_COPY_PENDING_KEY]) ? stored[AUTO_COPY_PENDING_KEY] : [];
+}
+
+async function savePendingAutoCopyJobs(jobs) {
+  await AUTO_COPY_STORAGE.set({ [AUTO_COPY_PENDING_KEY]: jobs });
+}
+
+async function upsertPendingAutoCopyJob(job) {
+  const jobs = await loadPendingAutoCopyJobs();
+  const now = Date.now();
+  const nextJobs = jobs.filter(
+    (item) => !isPendingAutoCopyExpired(item, now) && item.id !== job.id && item.tabId !== job.tabId
+  );
+  nextJobs.push(job);
+  await savePendingAutoCopyJobs(nextJobs);
+}
+
+async function removePendingAutoCopyJob(jobId) {
+  const jobs = await loadPendingAutoCopyJobs();
+  const nextJobs = jobs.filter((job) => job.id !== jobId);
+
+  if (nextJobs.length !== jobs.length) {
+    await savePendingAutoCopyJobs(nextJobs);
+  }
+}
+
+function cookieMatchesUrl(cookie, urlString) {
+  try {
+    const url = new URL(urlString);
+    const cookieDomain = normalizeCookieDomain(cookie.domain);
+
+    if (!cookieDomain) {
+      return false;
+    }
+
+    if (cookie.hostOnly) {
+      return url.hostname === cookieDomain;
+    }
+
+    return url.hostname === cookieDomain || url.hostname.endsWith(`.${cookieDomain}`);
+  } catch {
+    return false;
+  }
+}
+
+function normalizeCookieDomain(domain) {
+  return String(domain ?? "")
+    .trim()
+    .replace(/^\./, "");
+}
+
+async function getCookiesForCopy(url) {
+  const cookies = await getCookies({});
+  return cookies.filter((cookie) => cookieMatchesUrl(cookie, url.href));
 }
 
 function getCookies(filter) {

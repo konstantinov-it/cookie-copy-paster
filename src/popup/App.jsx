@@ -1,8 +1,6 @@
 import { ChevronDown, Copy, LoaderCircle, Trash2, X } from "lucide-react";
 import { Fragment, useEffect, useRef, useState } from "react";
 import {
-  AUTO_COPY_RETRY_COUNT,
-  AUTO_COPY_RETRY_DELAY_MS,
   defaultServiceSettings,
   MESSAGE_TYPE_AUTHORIZE,
   MESSAGE_TYPE_CLEAR,
@@ -372,6 +370,7 @@ export default function App() {
       const response = await sendRuntimeMessage({
         type: MESSAGE_TYPE_AUTHORIZE,
         payload: {
+          serviceId: service.id,
           url: authValues.url,
           username: authValues.username,
           password: authValues.password,
@@ -380,6 +379,7 @@ export default function App() {
             password: authValues.passwordSelector,
             submit: authValues.submitSelector,
           },
+          autoCopy: buildAutoCopyPayload(savedService),
         },
       });
 
@@ -390,27 +390,7 @@ export default function App() {
       const authMessage =
         response.result?.message ?? "Авторизация и заполнение формы выполнены.";
       const authErrors = response.result?.errors ?? [];
-      let statusText = authMessage;
-      let combinedErrors = [...authErrors];
-
-      if (shouldAutoCopyAfterAuth(savedService)) {
-        const autoCopyResult = await copyCookies(savedService, {
-          mode: "auto",
-          retries: AUTO_COPY_RETRY_COUNT,
-          retryDelayMs: AUTO_COPY_RETRY_DELAY_MS,
-        });
-
-        if (autoCopyResult.success) {
-          statusText = `${authMessage} ${autoCopyResult.summary}`;
-          if (autoCopyResult.errors?.length) {
-            combinedErrors = [...authErrors, ...autoCopyResult.errors];
-          }
-        } else if (autoCopyResult.error) {
-          statusText = `${authMessage} ${autoCopyResult.error.message ?? String(autoCopyResult.error)}`;
-        }
-      }
-
-      showStatus(formatServiceMessage(savedService, statusText), false, combinedErrors);
+      showStatus(formatServiceMessage(savedService, authMessage), false, authErrors);
     } catch (error) {
       console.error("Ошибка автоматической авторизации:", error);
       showStatus(formatServiceMessage(savedService, error.message ?? String(error)), true);
@@ -435,10 +415,7 @@ export default function App() {
               <span>Очищаем...</span>
             </>
           ) : (
-            <>
-              <Trash2 size={16} />
-              <span>Очистить cookie</span>
-            </>
+            <span>Очистить cookie</span>
           )}
         </button>
       </div>
@@ -785,6 +762,21 @@ function shouldAutoCopyAfterAuth(service) {
   }
 
   return Boolean(service.sourceUrl.trim() && service.destinationUrl.trim());
+}
+
+function buildAutoCopyPayload(service) {
+  if (!shouldAutoCopyAfterAuth(service)) {
+    return { enabled: false };
+  }
+
+  return {
+    enabled: true,
+    authUrl: service.authUrl.trim(),
+    sourceUrl: service.sourceUrl.trim(),
+    destinationUrl: service.destinationUrl.trim(),
+    copyAll: service.copyAll,
+    keys: service.keys.trim(),
+  };
 }
 
 function getAuthValues(service) {

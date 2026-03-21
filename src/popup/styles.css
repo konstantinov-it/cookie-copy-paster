@@ -74,10 +74,21 @@ h1 {
 }
 
 .header-clear-button {
+  padding: 8px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  border: 0;
+  background: transparent;
+  color: #6c757d;
+  font-weight: 600;
   white-space: nowrap;
+}
+
+.header-clear-button:hover:not(:disabled) {
+  background: transparent;
+  border-color: transparent;
+  color: #495057;
 }
 
 .service-list {
@@ -159,9 +170,9 @@ h1 {
 }
 
 .copy-button:hover:not(:disabled) {
-  background: #e9ecef;
-  border-color: #c1c7ce;
-  color: #212529;
+  background: #e7ebef;
+  border-color: #d1d7de;
+  color: #2b3137;
 }
 
 .secondary-button {
@@ -170,16 +181,10 @@ h1 {
   color: #212529;
 }
 
-  .secondary-button:hover:not(:disabled) {
-    background: #e9ecef;
-    border-color: #c1c7ce;
-  }
-
-  .copy-button:hover:not(:disabled) {
-    background: #3b4248;
-    border-color: #5c636a;
-    color: inherit;
-  }
+.secondary-button:hover:not(:disabled) {
+  background: #e9ecef;
+  border-color: #c1c7ce;
+}
 
 .accordion {
   border: 1px solid #ced4da;
@@ -358,6 +363,12 @@ h1 {
     border-color: #5c636a;
   }
 
+  .copy-button:hover:not(:disabled) {
+    background: #49515a;
+    border-color: #67707a;
+    color: #f8f9fa;
+  }
+
   .card-remove-button {
     border-color: #495057;
     color: #adb5bd;
@@ -381,5 +392,13 @@ h1 {
     background: #343a40;
     border-color: #5c636a;
     color: #9ac2ff;
+  }
+
+  .header-clear-button {
+    color: #adb5bd;
+  }
+
+  .header-clear-button:hover:not(:disabled) {
+    color: #f8f9fa;
   }
 }
